@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react'; // Removed useState as it's not directly used in App component's top level
 import { create } from 'zustand';
 import { ethers } from 'ethers';
 import { createChart, ColorType } from 'lightweight-charts';
@@ -28,30 +28,13 @@ const useGasStore = create((set) => ({
 
 // Constants for RPC URLs and Uniswap V3 Pool
 const RPC_URLS = {
-    // WebSocket URLs remain direct to Infura
     ethereum: 'wss://mainnet.infura.io/ws/v3/1c29b2a5aee0449285108945e609e2bb',
     polygon: 'wss://polygon-mainnet.infura.io/ws/v3/1c29b2a5aee0449285108945e609e2bb',
     arbitrum: 'wss://arbitrum-mainnet.infura.io/ws/v3/1c29b2a5aee0449285108945e609e2bb',
 };
 
-// Uniswap V3 ETH/USDC 0.05% pool address on Ethereum Mainnet
-const UNISWAP_V3_ETH_USDC_POOL = '0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640';
-// Uniswap V3 Swap event ABI for parsing logs
-const UNISWAP_SWAP_EVENT_ABI = [
-    "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)"
-];
-
-// Helper to calculate ETH/USD from sqrtPriceX96
-const calculateEthUsdPrice = (sqrtPriceX96) => {
-    const Q96 = ethers.BigNumber.from(2).pow(96);
-    const priceX96 = ethers.BigNumber.from(sqrtPriceX96);
-
-    const price_token0_per_token1_sqrt = Q96.mul(ethers.BigNumber.from(10).pow(12)).div(priceX96);
-    const price_token0_per_token1 = price_token0_per_token1_sqrt.pow(2);
-    const ethUsd = parseFloat(ethers.utils.formatUnits(price_token0_per_token1, 12));
-
-    return ethUsd;
-};
+// Public API for ETH/USD price (CoinGecko)
+const COINGECKO_ETH_USD_API = 'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd';
 
 
 // Custom Hook for fetching gas prices
@@ -131,56 +114,26 @@ const useGasFetcher = (chainName, setGas, addChartData, currentChartChain) => {
     }, [chainName, fetchGas]);
 };
 
-// Custom Hook for fetching ETH/USD price from Uniswap V3 logs
+// Custom Hook for fetching ETH/USD price from a public API
 const useEthUsdPriceFetcher = (setEthUsdPrice) => {
-    const providerRef = useRef(null);
     const intervalRef = useRef(null);
 
     const fetchPrice = useCallback(async () => {
-        // No need for providerRef.current check here as it's set to null below
-        // if (!providerRef.current) return;
-
         try {
-            // IMPORTANT: Using the local proxy for the JSON RPC request to bypass CORS
-            // The proxy is configured in src/setupProxy.js
-            // The path will be /infura-proxy/v3/YOUR_API_KEY
-            // Note: The API key is hardcoded here for the proxy path.
-            const proxiedInfuraUrl = `/infura-proxy/v3/1c29b2a5aee0449285108945e609e2bb`;
-
-            // Create a new JsonRpcProvider using the proxied URL
-            const proxiedProvider = new ethers.providers.JsonRpcProvider(proxiedInfuraUrl);
-
-            const latestBlockNumber = await proxiedProvider.getBlockNumber(); // Use proxiedProvider
-            const filter = {
-                address: UNISWAP_V3_ETH_USDC_POOL,
-                topics: [ethers.utils.id("Swap(address,address,int256,int256,uint160,uint128,int24)")],
-                fromBlock: latestBlockNumber - 5,
-                toBlock: latestBlockNumber,
-            };
-
-            const logs = await proxiedProvider.getLogs(filter); // Use the proxied provider
-
-            if (logs.length > 0) {
-                const iface = new ethers.utils.Interface(UNISWAP_SWAP_EVENT_ABI);
-                const parsedLog = iface.parseLog(logs[logs.length - 1]);
-
-                const sqrtPriceX96 = parsedLog.args.sqrtPriceX96;
-                const ethUsd = calculateEthUsdPrice(sqrtPriceX96);
-                setEthUsdPrice(ethUsd);
+            const response = await fetch(COINGECKO_ETH_USD_API);
+            const data = await response.json();
+            if (data && data.ethereum && data.ethereum.usd) {
+                setEthUsdPrice(data.ethereum.usd);
             } else {
-                console.warn("No recent Uniswap V3 Swap events found for ETH/USDC pool.");
+                console.warn("Could not fetch ETH/USD price from CoinGecko.");
             }
         } catch (error) {
-            console.error("Error fetching ETH/USD price:", error);
+            console.error("Error fetching ETH/USD price from public API:", error);
         }
     }, [setEthUsdPrice]);
 
     useEffect(() => {
-        // providerRef.current is set to null here because we are creating a new proxiedProvider
-        // inside the fetchPrice function for each call. This is fine for this setup.
-        providerRef.current = null;
-        console.log("Initialized ETH/USD price fetcher (using local proxy for getLogs).");
-
+        console.log("Initialized ETH/USD price fetcher (using public API).");
         fetchPrice();
         intervalRef.current = setInterval(fetchPrice, 15000);
 
@@ -194,17 +147,8 @@ const useEthUsdPriceFetcher = (setEthUsdPrice) => {
 const GasPriceCard = ({ chainName, gasData, ethUsdPrice, l1GasEstimate }) => {
     const { simulationMode, transactionValue, simulatedCosts } = useGasStore();
 
-    const getGasCostUsd = (gweiPrice) => {
-        if (!gweiPrice || !ethUsdPrice) return 'N/A'; // Corrected from 'N/'
-        const gasLimit = 210000;
-        const gasCostEth = (parseFloat(gweiPrice) * gasLimit) / 1_000_000_000;
-        let totalEthCost = gasCostEth;
-
-        if (chainName === 'arbitrum' && l1GasEstimate) {
-            totalEthCost += parseFloat(l1GasEstimate);
-        }
-        return (totalEthCost * ethUsdPrice).toFixed(4);
-    };
+    // The getGasCostUsd function was removed because it was not being directly used in the JSX.
+    // The simulatedCosts are now directly accessed from the Zustand store.
 
     return (
         <div className="bg-gray-800 p-6 rounded-lg shadow-lg text-white flex-1 min-w-[280px]">
@@ -321,13 +265,14 @@ const GasPriceChart = ({ data, chainName }) => {
             seriesRef.current.setData(data);
         }
         if (chartRef.current) {
+            // Update watermark text when chainName changes
             chartRef.current.applyOptions({
                 watermark: {
                     text: `${chainName.toUpperCase()} Gas Price (Gwei)`,
                 },
             });
         }
-    }, [data, chainName]);
+    }, [data, chainName]); // Added chainName to dependency array
 
     return (
         <div className="bg-gray-800 p-6 rounded-lg shadow-lg mt-8" ref={chartContainerRef}>
@@ -351,6 +296,7 @@ const App = () => {
     useGasFetcher('polygon', setPolygonGas, addChartData, currentChartChain);
     useGasFetcher('arbitrum', setArbitrumGas, addChartData, currentChartChain);
 
+    // Use the new public API price fetcher
     useEthUsdPriceFetcher(setEthUsdPrice);
 
     useEffect(() => {
